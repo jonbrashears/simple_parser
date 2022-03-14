@@ -1,5 +1,6 @@
 use std::{io::prelude::*, net::ToSocketAddrs};
-use std::net::{TcpListener, TcpStream, UdpSocket};
+use std::net::{TcpListener, TcpStream, UdpSocket, Shutdown};
+use std::thread;
 use std::fs::OpenOptions;
 use std::io;
 
@@ -9,6 +10,9 @@ use clap::{Command,Arg};
 extern crate chrono;
 use chrono::{DateTime,Local};
 
+const EOF_SIZE: usize = 0;
+const MAX_PACKET_SIZE: usize = 2048;
+
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum ConnectionTypes {
     TCP,
@@ -17,21 +21,59 @@ enum ConnectionTypes {
     UNKNOWN
 }
 
-// Reads a line from the Tcp Stream
-fn handle_tcp_connection(stream: TcpStream) -> io::Result<()>{
-    // Reading the stream consumes it, so we have to clone the stream we wish to reply to
-    let mut ostream = stream.try_clone()?;
-    let mut rdr = io::BufReader::new(stream);
-    let mut text = String::new();
-    rdr.read_line(&mut text)?;
-    println!("got {}", text.trim_end());
-
-    // Echo received line back to client
-    ostream.write_all(text.as_bytes())?;
-    Ok(())
+trait Parse {
+    fn parse(&self);
 }
 
-fn run_tcp_server(socket: String) {
+struct UdpParser {
+    socket: String
+}
+struct TcpParser {
+    socket: String
+}
+
+impl Parse for UdpParser {
+    fn parse(&self) {
+        start_udp(self.socket.clone())
+    }
+}
+
+impl Parse for TcpParser {
+    fn parse(&self) {
+        start_tcp(self.socket.clone())
+    }
+}
+
+// Reads a line from the Tcp Stream
+fn handle_tcp_connection(mut stream: TcpStream){
+    // Reading the stream consumes it, so we have to clone the stream we wish to reply to
+    let mut data = [0 as u8; MAX_PACKET_SIZE];
+    while match stream.read(&mut data) {
+        
+        Ok(size) => {
+            match size {
+                EOF_SIZE=>{
+                    println!("Client {} disconnected.", stream.peer_addr().unwrap());
+                    false
+                },
+                _=>{
+                        println!("{:?}", std::str::from_utf8(&data[0..size]).unwrap().to_string());
+                
+                        // Echo message back to client
+                        stream.write(&data[0..size]).unwrap();
+                        true
+                }
+            }
+        },
+        Err(_) => {
+            println!("An error occurred, terminating connection with {}", stream.peer_addr().unwrap());
+            stream.shutdown(Shutdown::Both).unwrap();
+            false
+        }
+    } {}
+}
+
+fn start_tcp(socket: String) {
     println!("Starting up TCP server with Socket: {:?}...", socket);
     // Start server and listen on port
     let listener = TcpListener::bind(socket).expect("Error: Could not start server!");
@@ -39,35 +81,33 @@ fn run_tcp_server(socket: String) {
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => {
-                if let Err(e) = handle_tcp_connection(stream) {
-                    println!("error {:?}", e);
-                }
+                println!("New connection: {}", stream.peer_addr().unwrap());
+                thread::spawn(move|| {
+                    // connection succeeded
+                    handle_tcp_connection(stream)
+                });
             }
             Err(e) => { println!("Error: Connection failed {}", e);}
         }
     }
 }
 
-fn start_udp(socket: String) -> std::io::Result<()> {
-    println!("Listening on UDP socket: {:?}...", socket);
-    let socket = UdpSocket::bind(socket).expect("Error: Could not bind!");
+fn start_udp(socket: String){
+    let listen_socket = socket.clone();
+    let socket = UdpSocket::bind(socket.clone()).expect("Error: Could not bind!");
+    println!("Listening on UDP socket: {:?}...", listen_socket);
+    loop {
+        // Receives a single datagram of size 'MAX_PACKET_SIZE'. Data exceeding that size will be cut off.
+        let mut data = vec![0; MAX_PACKET_SIZE];
+        let (size, source_socket) = socket.recv_from(&mut data).expect("Error getting data");
 
-    // Receives a single datagram message on the socket. If `buf` is too small to hold
-    // the message, it will be cut off.
-    let mut buf = vec![0; 2048];
-    let (amt, src) = socket.recv_from(&mut buf)?;
-
-    println!("Received packet of size {} from socket: {}", amt, src);
-    for index in 0..amt {
-        println!("got {}", buf[index] as char);
+        println!("Received packet of size {} from socket: {}", size, source_socket);
+        println!("got {}", std::str::from_utf8(&data[0..size]).unwrap().to_string());
     }
-    
-    Ok(())
-
 }
 
-fn main() {
-    let matches = Command::new("simple-parser-app").version("v1.0-beta")
+fn command_args() -> clap::ArgMatches {
+    Command::new("simple-parser-app").version("v1.0-beta")
                     .arg(Arg::new("CONNECTION TYPE")
                          .short('c')
                          .long("connection")
@@ -78,8 +118,11 @@ fn main() {
                          .long("parameters")
                          .required(true)
                          .takes_value(true))
-                    .get_matches();
+                    .get_matches()
+}
 
+fn main() {
+    let matches = command_args();
     let connection_type_arg = matches.value_of("CONNECTION TYPE").unwrap().to_string().to_ascii_lowercase();
     let connection_params= matches.value_of("PARAMETERS").unwrap().to_string();
     let connection_type: ConnectionTypes;
@@ -94,13 +137,13 @@ fn main() {
     match connection_type {
         ConnectionTypes::TCP=>{
             let tcp_socket = connection_params;
-            run_tcp_server(tcp_socket)
+            let tcp_server = TcpParser{socket: tcp_socket};
+            tcp_server.parse()
         },
         ConnectionTypes::UDP=> {
             let udp_socket = connection_params;
-            loop {
-                start_udp(udp_socket.clone()).unwrap();
-            }
+            let udp_listener = UdpParser{socket: udp_socket.clone()};
+            udp_listener.parse();
         },
         ConnectionTypes::SERIAL=>{
             let baud_rate = connection_params.parse::<u64>();
