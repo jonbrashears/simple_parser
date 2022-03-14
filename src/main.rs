@@ -28,8 +28,39 @@ trait Parse {
 struct UdpParser {
     socket: String
 }
+
+impl UdpParser {
+    fn new(socket: &str) -> UdpParser {
+        UdpParser{
+            socket: socket.to_string()
+        }
+    }
+}
+
 struct TcpParser {
     socket: String
+}
+
+impl TcpParser {
+    fn new(socket: &str) -> TcpParser {
+        TcpParser{
+            socket: socket.to_string()
+        }
+    }
+}
+
+struct SerialParser {
+    device_path: String,
+    baud_rate: String
+}
+
+impl SerialParser {
+    fn new(device_path: &str, baud_rate: &str) -> SerialParser {
+        SerialParser{
+            device_path: device_path.to_string(),
+            baud_rate: baud_rate.to_string()
+        }
+    }
 }
 
 impl Parse for UdpParser {
@@ -41,6 +72,12 @@ impl Parse for UdpParser {
 impl Parse for TcpParser {
     fn parse(&self) {
         start_tcp(self.socket.clone())
+    }
+}
+
+impl Parse for SerialParser {
+    fn parse(&self) {
+        start_serial(self.device_path.clone(), self.baud_rate.clone())
     }
 }
 
@@ -106,6 +143,11 @@ fn start_udp(socket: String){
     }
 }
 
+fn start_serial(device_path: String, baud_rate: String) {
+    println!("Parsing with connection {} and baud rate {}", device_path, baud_rate);
+    println!("THIS IS NOT YET IMPLEMENTED!")
+}
+
 fn command_args() -> clap::ArgMatches {
     Command::new("simple-parser-app").version("v1.0-beta")
                     .arg(Arg::new("CONNECTION TYPE")
@@ -137,18 +179,18 @@ fn main() {
     match connection_type {
         ConnectionTypes::TCP=>{
             let tcp_socket = connection_params;
-            let tcp_server = TcpParser{socket: tcp_socket};
+            let tcp_server = TcpParser::new(&tcp_socket);
             tcp_server.parse()
         },
         ConnectionTypes::UDP=> {
             let udp_socket = connection_params;
-            let udp_listener = UdpParser{socket: udp_socket.clone()};
+            let udp_listener = UdpParser::new(&udp_socket);
             udp_listener.parse();
         },
         ConnectionTypes::SERIAL=>{
-            let baud_rate = connection_params.parse::<u64>();
-            println!("Setting baud rate to {:?}", baud_rate);
-            println!("Serial connections are not implemented yet!")
+            let baud_rate = connection_params;
+            let serial_connection = SerialParser::new("/dev/ttyS0", &baud_rate);
+            serial_connection.parse();
         },
         _=>println!("Unknown connection type!"),
     }
